@@ -9,7 +9,6 @@ class Controller:
                  which_port,
                  name='MLJ050',
                  limits_mm=(0, 50), # reduce if necessary e.g. (0, 10)
-                 home=True,         # must home for absolute positions
                  timeout=5,         # set default serial port timeout
                  verbose=True,
                  very_verbose=False):
@@ -31,7 +30,8 @@ class Controller:
         self._velocity_mmps = 3 # velocity in mm/s for expected move time
         self._get_encoder_counts()
         self._moving = False
-        if home:
+        self._get_homed_status()
+        if not self._homed:
             self._home()
 
     def _encoder_counts_to_mm(self, encoder_counts):
@@ -95,23 +95,30 @@ class Controller:
         self.position_mm = self._encoder_counts_to_mm(self._encoder_counts)
         return self._encoder_counts
 
+    def _get_homed_status(self):
+        if self.very_verbose:
+            print('%s: getting homed status...'%self.name)
+        # MGMSG_MOT_REQ_STATUSBITS
+        cmd = b'\x29\x04\x00\x00\x50\x01'       
+        status_bits = self._send(cmd, response_bytes=12)[8:]
+        self._homed = bool(status_bits[1] & 4) # bit mask 0x00000400 = homed
+        if self.very_verbose:
+            print('%s: -> homed = %s'%(self.name, self._homed))
+        return self._homed
+
     def _home(self, block=True):
         if self.very_verbose:
             print('%s: homing...'%self.name)
         # MGMSG_MOT_MOVE_HOME
         cmd = b'\x43\x04\x01\x00\x50\x01'
-        self.port.timeout = 60 # can take up to 1 minute!!
-        response = self._send(cmd)
+        self._send(cmd)
         if block:
             self._finish_home()
         return None
 
     def _finish_home(self):
-        response = self.port.read(6)
-        assert self.port.inWaiting() == 0
-        # MGMSG_MOT_MOVE_HOMED
-        assert response == b'\x44\x04\x01\x00\x01\x50'
-        self.port.timeout = self.timeout # reset to default
+        while not self._homed:
+            self._get_homed_status()
         if self.very_verbose:
             print('%s: -> done homing'%self.name)
         self._get_encoder_counts()
