@@ -182,7 +182,9 @@ class Controller:
         self.port.read(20) # MGMSG_MOT_MOVE_COMPLETED
         assert self.port.inWaiting() == 0
         self.port.timeout = self.timeout
-        assert self._get_encoder_counts() == self._target_encoder_counts
+        self._get_encoder_counts()
+        if self._moving: # i.e. if 'self.stop()' was not called then check move
+            assert self._encoder_counts == self._target_encoder_counts
         self._moving = False
         if self.verbose:
             print('%s: -> finished move.'%self.name)
@@ -212,6 +214,19 @@ class Controller:
         encoder_counts = self._mm_to_encoder_counts(legal_move_mm)
         self._move_to_encoder_count(encoder_counts, block)
         return legal_move_mm
+
+    def stop(self, mode='abrupt'):
+        if self.verbose:
+            print('%s: stopping (mode=%s)'%(self.name, mode))
+        # MGMSG_MOT_MOVE_STOP
+        assert mode in ('abrupt', 'profiled')
+        if mode == 'abrupt':    cmd = b'\x65\x04\x01\x01\x50\x01'
+        if mode == 'profiled':  cmd = b'\x65\x04\x01\x02\x50\x01'
+        self._send(cmd, response_bytes=20)
+        self._moving = False
+        if self.verbose:
+            print('%s: -> stopped'%self.name)
+        return None
 
     def close(self):
         if self.verbose: print("%s: closing..."%self.name, end=' ')
@@ -255,6 +270,12 @@ if __name__ == '__main__':
     print('(immediate follow up call forces finish on pending move)')
     print('doing something else')
     controller._finish_move()
+
+    print('\n# Move and stop:')
+    controller.move_mm(1, relative=False, block=False)
+    controller.stop()
+    controller.move_mm(1, relative=False, block=False)
+    controller.stop(mode='profiled')
 
     controller.move_mm(0, relative=False)
     controller.close()
