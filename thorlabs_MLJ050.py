@@ -10,6 +10,7 @@ class Controller:
                  which_port,
                  name='MLJ050',
                  limits_mm=(0, 50), # reduce if necessary e.g. (0, 10)
+                 home=True,         # default home if not 'self._homed'
                  verbose=True,
                  very_verbose=False):
         self.name = name
@@ -34,7 +35,7 @@ class Controller:
         self._set_home_parameters(parameters)
         self._get_encoder_counts()
         self._get_homed_status()
-        if not self._homed: self._home()
+        if not self._homed and home: self._home()
         self._moving = False
 
     def _encoder_counts_to_mm(self, encoder_counts):
