@@ -207,6 +207,14 @@ class Controller:
                   '(%0.2f requested)'%move_mm)
         return legal_move_mm
 
+    def get_position_mm(self):
+        if self.verbose:
+            print('%s: getting position'%self.name)
+        self._get_encoder_counts()
+        if self.verbose:
+            print('%s: -> position_mm = %0.3f'%(self.name, self.position_mm))
+        return self.position_mm
+
     def move_mm(self, move_mm, relative=True, block=True):
         legal_move_mm = self._legalize_move_mm(move_mm, relative)
         if self.verbose:
@@ -224,6 +232,7 @@ class Controller:
         if mode == 'abrupt':    cmd = b'\x65\x04\x01\x01\x50\x01'
         if mode == 'profiled':  cmd = b'\x65\x04\x01\x02\x50\x01'
         self._send(cmd, response_bytes=20)
+        self._get_encoder_counts()
         self._moving = False
         if self.verbose:
             print('%s: -> stopped'%self.name)
@@ -241,7 +250,8 @@ if __name__ == '__main__':
     controller = Controller(
         which_port='COM7', verbose=True, very_verbose=False)
 
-    print('\n# position_mm = %0.2fmm'%controller.position_mm)
+    print('\n# Get position:')
+    controller.get_position_mm()
 
     print('\n# Some relative moves:')
     for moves in range(3):
