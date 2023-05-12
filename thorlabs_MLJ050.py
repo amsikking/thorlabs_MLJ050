@@ -227,13 +227,14 @@ class Controller:
     def stop(self, mode='abrupt'):
         if self.verbose:
             print('%s: stopping (mode=%s)'%(self.name, mode))
-        # MGMSG_MOT_MOVE_STOP
-        assert mode in ('abrupt', 'profiled')
-        if mode == 'abrupt':    cmd = b'\x65\x04\x01\x01\x50\x01'
-        if mode == 'profiled':  cmd = b'\x65\x04\x01\x02\x50\x01'
-        self._send(cmd, response_bytes=20)
-        self._get_encoder_counts()
-        self._moving = False
+        if self._moving:
+            # MGMSG_MOT_MOVE_STOP
+            assert mode in ('abrupt', 'profiled')
+            if mode == 'abrupt':    cmd = b'\x65\x04\x01\x01\x50\x01'
+            if mode == 'profiled':  cmd = b'\x65\x04\x01\x02\x50\x01'
+            self._send(cmd, response_bytes=20)
+            self._get_encoder_counts()
+            self._moving = False
         if self.verbose:
             print('%s: -> stopped'%self.name)
         return None
