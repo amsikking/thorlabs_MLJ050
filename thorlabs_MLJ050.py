@@ -1,3 +1,4 @@
+import time
 import serial
 
 class Controller:
@@ -9,30 +10,32 @@ class Controller:
                  which_port,
                  name='MLJ050',
                  limits_mm=(0, 50), # reduce if necessary e.g. (0, 10)
-                 timeout=5,         # set default serial port timeout
                  verbose=True,
                  very_verbose=False):
         self.name = name
         self.limits_mm = limits_mm
-        self.timeout = timeout
         self.verbose = verbose
         self.very_verbose = very_verbose
+        self.timeout = 1
         if self.verbose: print("%s: opening..."%self.name, end='')
         try:
             self.port = serial.Serial(
-                port=which_port, baudrate=115200, timeout=5)
+                port=which_port, baudrate=115200, timeout=self.timeout)
         except serial.serialutil.SerialException:
             raise IOError(
                 '%s: no connection on port %s'%(self.name, which_port))
         if self.verbose: print(" done.")
-        self.get_model_number() == 'MLJ050'
+        assert self.get_model_number() == 'MLJ050'
         self._counts_per_mm = 3 * 409600 # the 3x is not documented!
         self._velocity_mmps = 3 # velocity in mm/s for expected move time
+        # In the manual it says the 'home parameters' should be set on init.
+        # However, for this instance of the MLJ050 they are not set (empty)
+        parameters = bytes(14) # -> empty bytes
+        self._set_home_parameters(parameters)
         self._get_encoder_counts()
-        self._moving = False
         self._get_homed_status()
-        if not self._homed:
-            self._home()
+        if not self._homed: self._home()
+        self._moving = False
 
     def _encoder_counts_to_mm(self, encoder_counts):
         mm = encoder_counts / self._counts_per_mm
@@ -106,6 +109,27 @@ class Controller:
             print('%s: -> homed = %s'%(self.name, self._homed))
         return self._homed
 
+    def _get_home_parameters(self):
+        if self.very_verbose:
+            print('%s: getting home parameters...'%self.name)
+        # MGMSG_MOT_GET_HOMEPARAMS
+        cmd = b'\x41\x04\x00\x00\x50\x01'       
+        self._home_parameters = self._send(cmd, response_bytes=20)[6:]
+        if self.very_verbose:
+            print('%s: -> home parameters = %s'%(
+                self.name, self._home_parameters))
+        return self._home_parameters
+
+    def _set_home_parameters(self, parameters):
+        if self.very_verbose:
+            print('%s: setting home parameters = %s'%(self.name, parameters))
+        cmd = b'\x40\x04\x0E\x00\xd0\x01' + parameters
+        self._send(cmd)
+        assert self._get_home_parameters() == parameters
+        if self.very_verbose:
+            print('%s: done setting home parameters'%self.name)
+        return None
+
     def _home(self, block=True):
         if self.very_verbose:
             print('%s: homing...'%self.name)
@@ -117,11 +141,13 @@ class Controller:
         return None
 
     def _finish_home(self):
-        while not self._homed:
-            self._get_homed_status()
+        self.port.timeout = 60 # ~max time to home if starting at +50mm
+        self.port.read(6) # MGMSG_MOT_MOVE_HOMED
+        assert self.port.inWaiting() == 0
+        self.port.timeout = self.timeout
+        assert self._get_homed_status()
         if self.very_verbose:
             print('%s: -> done homing'%self.name)
-        self._get_encoder_counts()
         return None
 
     def _move_to_encoder_count(self, encoder_counts, block=True):
@@ -143,14 +169,23 @@ class Controller:
     def _finish_move(self):
         if not self._moving:
             return
-        self.port.read(20)
+        # the move can be slow, and after sending the move command the
+        # controller does not like the immediate follow up call
+        # 'self.port.read(20)' (it seems to need ~1ms of delay!). So let's
+        # wait a sensible amount of time before trying to collect the
+        # 'move completed' message:
+        counts = abs(self._target_encoder_counts - self._encoder_counts)
+        relative_move_mm = self._encoder_counts_to_mm(counts)
+        expected_move_time_s = relative_move_mm / self._velocity_mmps
+        time_tolerance_s = 0.1 # how much extra time should we allow? (> 1ms!)
+        time.sleep(expected_move_time_s + time_tolerance_s)
+        self.port.read(20) # MGMSG_MOT_MOVE_COMPLETED
         assert self.port.inWaiting() == 0
+        self.port.timeout = self.timeout
         assert self._get_encoder_counts() == self._target_encoder_counts
+        self._moving = False
         if self.verbose:
             print('%s: -> finished move.'%self.name)
-        self.port.timeout = self.timeout # reset to default
-        self._target_encoder_counts = None
-        self._moving = False
         return None
 
     def _legalize_move_mm(self, move_mm, relative):
@@ -175,25 +210,20 @@ class Controller:
             print('%s: moving to position_mm = %0.2f'%(
                 self.name, legal_move_mm))
         encoder_counts = self._mm_to_encoder_counts(legal_move_mm)
-        # the move can be slow, so lets estimate the time and adjust the timeout
-        time_tolerance_s = 1 # how much extra time should we allow?
-        relative_move_mm = abs(self.position_mm - legal_move_mm)
-        expected_move_time_s = relative_move_mm / self._velocity_mmps
-        self.port.timeout = expected_move_time_s + time_tolerance_s
         self._move_to_encoder_count(encoder_counts, block)
-        if block:
-            self._finish_move()
         return legal_move_mm
 
     def close(self):
         if self.verbose: print("%s: closing..."%self.name, end=' ')
+        if self._moving:
+            self._finish_move()
         self.port.close()
         if self.verbose: print("done.")
         return None
 
 if __name__ == '__main__':
     controller = Controller(
-        which_port='COM10', verbose=True, very_verbose=False)
+        which_port='COM7', verbose=True, very_verbose=False)
 
     print('\n# position_mm = %0.2fmm'%controller.position_mm)
 
