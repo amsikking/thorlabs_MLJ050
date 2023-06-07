@@ -32,8 +32,8 @@ class Controller:
         self._counts_per_mm     = 3 * 409600 # the 3x is not documented!
         self._counts_per_mmps   = 3 * round(409600 * 53.68)     # mm/s
         self._counts_per_mmpss  = 3 * round(409600 / 90.9)      # mm/s^2
-        self._limits_mmps  = (0, 3) # velocity limits from manual
-        self._limits_mmpss = (0, 8) # acceleration limits from manual
+        self._limits_mmps  = (0.2, 3.0) # velocity limits
+        self._limits_mmpss = (2.0, 8.0) # acceleration limits
         # In the manual it says the 'home parameters' should be set on init.
         # However, for this instance of the MLJ050 they are not set (empty)
         parameters = bytes(14) # -> empty bytes
