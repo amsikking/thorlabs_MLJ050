@@ -9,8 +9,10 @@ class Controller:
     def __init__(self,
                  which_port,
                  name='MLJ050',
-                 limits_mm=(0, 50), # reduce if necessary e.g. (0, 10)
-                 home=True,         # default home if not 'self._homed'
+                 limits_mm=(0, 50),     # reduce if necessary e.g. (0, 10)
+                 velocity_mmps=3,       # adjust as needed
+                 acceleration_mmpss=8,  # adjust as needed
+                 home=True,             # default home if not 'self._homed'
                  verbose=True,
                  very_verbose=False):
         self.name = name
@@ -26,31 +28,23 @@ class Controller:
             raise IOError(
                 '%s: no connection on port %s'%(self.name, which_port))
         if self.verbose: print(" done.")
-        assert self.get_model_number() == 'MLJ050'
-        self._counts_per_mm = 3 * 409600 # the 3x is not documented!
-        self._velocity_mmps = 3 # velocity in mm/s for expected move time
+        assert self._get_model_number() == 'MLJ050'
+        self._counts_per_mm     = 3 * 409600 # the 3x is not documented!
+        self._counts_per_mmps   = 3 * round(409600 * 53.68)     # mm/s
+        self._counts_per_mmpss  = 3 * round(409600 / 90.9)      # mm/s^2
+        self._limits_mmps  = (0, 3) # velocity limits from manual
+        self._limits_mmpss = (0, 8) # acceleration limits from manual
         # In the manual it says the 'home parameters' should be set on init.
         # However, for this instance of the MLJ050 they are not set (empty)
         parameters = bytes(14) # -> empty bytes
         self._set_home_parameters(parameters)
+        self._get_motion_parameters()
+        self.set_velocity_mmps(velocity_mmps)
+        self.set_acceleration_mmpss(acceleration_mmpss)
         self._get_encoder_counts()
         self._get_homed_status()
         if not self._homed and home: self._home()
         self._moving = False
-
-    def _encoder_counts_to_mm(self, encoder_counts):
-        mm = encoder_counts / self._counts_per_mm
-        if self.very_verbose:
-            print('%s: -> %i encoder counts = %0.2fmm'%(
-                self.name, encoder_counts, mm))
-        return mm
-
-    def _mm_to_encoder_counts(self, mm):
-        encoder_counts = int(round(mm * self._counts_per_mm))
-        if self.very_verbose:
-            print('%s: -> %0.2fmm = %i encoder counts'%(
-                self.name, mm, encoder_counts))
-        return encoder_counts
 
     def _send(self, cmd, response_bytes=None):
         '''
@@ -74,7 +68,7 @@ class Controller:
             print('%s: -> response: %s'%(self.name, response))
         return response
 
-    def get_model_number(self):
+    def _get_model_number(self):
         if self.verbose:
             print('%s: getting model number'%self.name)
         # MGMSG_HW_REQ_INFO (no 'Chan Ident' here)
@@ -84,20 +78,6 @@ class Controller:
         if self.verbose:
             print('%s: -> model_number = %s'%(self.name, self.model_number))
         return self.model_number
-
-    def _get_encoder_counts(self):
-        if self.very_verbose:
-            print('%s: getting encoder counts'%self.name)
-        # MGMSG_MOT_REQ_POSCOUNTER
-        cmd = b'\x11\x04\x01\x00\x50\x01'
-        response = self._send(cmd, response_bytes=12)
-        self._encoder_counts = int.from_bytes(
-            response[-4:], byteorder='little', signed=True)
-        if self.very_verbose:
-            print('%s: -> encoder counts = %i'%(
-                self.name, self._encoder_counts))
-        self.position_mm = self._encoder_counts_to_mm(self._encoder_counts)
-        return self._encoder_counts
 
     def _get_homed_status(self):
         if self.very_verbose:
@@ -151,6 +131,98 @@ class Controller:
             print('%s: -> done homing'%self.name)
         return None
 
+    def _encoder_counts_to_mm(self, encoder_counts):            # position
+        mm = encoder_counts / self._counts_per_mm
+        if self.very_verbose:
+            print('%s: -> %i encoder counts = %0.2fmm'%(
+                self.name, encoder_counts, mm))
+        return mm
+
+    def _mm_to_encoder_counts(self, mm):                        # position
+        encoder_counts = int(round(mm * self._counts_per_mm))
+        if self.very_verbose:
+            print('%s: -> %0.2fmm = %i encoder counts'%(
+                self.name, mm, encoder_counts))
+        return encoder_counts
+
+    def _encoder_counts_ps_to_mmps(self, encoder_counts_ps):    # velocity
+        mmps = encoder_counts_ps / self._counts_per_mmps
+        if self.very_verbose:
+            print('%s: -> %i encoder counts per second = %0.2fmmps'%(
+                self.name, encoder_counts_ps, mmps))
+        return mmps
+
+    def _mmps_to_encoder_counts_ps(self, mmps):                 # velocity
+        encoder_counts_ps = int(round(mmps * self._counts_per_mmps))
+        if self.very_verbose:
+            print('%s: -> %0.2fmmps = %i encoder counts per second'%(
+                self.name, mmps, encoder_counts_ps))
+        return encoder_counts_ps
+
+    def _encoder_counts_pss_to_mmpss(self, encoder_counts_pss): # acceleration
+        mmpss = encoder_counts_pss / self._counts_per_mmpss
+        if self.very_verbose:
+            print('%s: -> %i encoder counts per second^2 = %0.2fmmpss'%(
+                self.name, encoder_counts_pss, mmpss))
+        return mmpss
+
+    def _mmpss_to_encoder_counts_pss(self, mmpss):              # acceleration
+        encoder_counts_pss = int(round(mmpss * self._counts_per_mmpss))
+        if self.very_verbose:
+            print('%s: -> %0.2fmm = %i encoder counts per second^2'%(
+                self.name, mmpss, encoder_counts_pss))
+        return encoder_counts_pss
+
+    def _get_motion_parameters(self):
+        if self.very_verbose:
+            print('%s: getting motion parameters'%self.name)
+        # MGMSG_MOT_REQ_VELPARAMS
+        cmd = b'\x14\x04\x01\x00\x50\x01'
+        response = self._send(cmd, response_bytes=20)
+        self._encoder_counts_ps = int.from_bytes(
+            response[16:20], byteorder='little', signed=False)        
+        self._encoder_counts_pss = int.from_bytes(
+            response[12:16], byteorder='little', signed=False)
+        if self.very_verbose:
+            print('%s: -> encoder counts per second = %i'%(
+                self.name, self._encoder_counts_ps))
+            print('%s: -> encoder counts per second^2 = %i'%(
+                self.name, self._encoder_counts_pss))
+        self.velocity_mmps = self._encoder_counts_ps_to_mmps(
+            self._encoder_counts_ps)
+        self.acceleration_mmpss = self._encoder_counts_pss_to_mmpss(
+            self._encoder_counts_pss)
+        return self._encoder_counts_ps, self._encoder_counts_pss
+
+    def _set_motion_parameters(self, encoder_counts_ps, encoder_counts_pss):
+        if self.very_verbose:
+            print('%s: setting motion parameters'%self.name)
+        vel_bytes = encoder_counts_ps.to_bytes(4, 'little', signed=False)
+        acc_bytes = encoder_counts_pss.to_bytes(4, 'little', signed=False)
+        # MGMSG_MOT_SET_VELPARAMS
+        cmd = (b'\x13\x04\x0E\x00\xd0\x01\x01\x00\x00\x00\x00\x00'
+               + acc_bytes + vel_bytes)
+        self._send(cmd)
+        assert self._get_motion_parameters() == (
+            encoder_counts_ps, encoder_counts_pss)
+        if self.very_verbose:
+            print('%s: -> done setting motion parameters.'%self.name)
+        return None
+
+    def _get_encoder_counts(self):
+        if self.very_verbose:
+            print('%s: getting encoder counts'%self.name)
+        # MGMSG_MOT_REQ_POSCOUNTER
+        cmd = b'\x11\x04\x01\x00\x50\x01'
+        response = self._send(cmd, response_bytes=12)
+        self._encoder_counts = int.from_bytes(
+            response[-4:], byteorder='little', signed=True)
+        if self.very_verbose:
+            print('%s: -> encoder counts = %i'%(
+                self.name, self._encoder_counts))
+        self.position_mm = self._encoder_counts_to_mm(self._encoder_counts)
+        return self._encoder_counts
+
     def _move_to_encoder_count(self, encoder_counts, block=True):
         if self._moving:
             self._finish_move()
@@ -177,7 +249,7 @@ class Controller:
         # 'move completed' message:
         counts = abs(self._target_encoder_counts - self._encoder_counts)
         relative_move_mm = self._encoder_counts_to_mm(counts)
-        expected_move_time_s = relative_move_mm / self._velocity_mmps
+        expected_move_time_s = relative_move_mm / self.velocity_mmps
         time_tolerance_s = 0.1 # how much extra time should we allow? (> 1ms!)
         time.sleep(expected_move_time_s + time_tolerance_s)
         self.port.read(20) # MGMSG_MOT_MOVE_COMPLETED
@@ -214,6 +286,51 @@ class Controller:
         if self.verbose:
             print('%s: -> position_mm = %0.3f'%(self.name, self.position_mm))
         return self.position_mm
+
+    def get_velocity_mmps(self):
+        if self.verbose:
+            print('%s: getting velocity'%self.name)
+        self._get_motion_parameters()
+        if self.verbose:
+            print('%s: -> velocity_mmps = %0.3f'%(
+                self.name, self.velocity_mmps))
+        return self.velocity_mmps
+
+    def set_velocity_mmps(self, velocity_mmps):
+        if self.verbose:
+            print('%s: setting velocity_mmps = %0.3f'%(
+                self.name, velocity_mmps))
+        assert velocity_mmps >= self._limits_mmps[0], 'mmps too low'
+        assert velocity_mmps <= self._limits_mmps[1], 'mmps too high'
+        encoder_counts_ps = self._mmps_to_encoder_counts_ps(velocity_mmps)
+        self._set_motion_parameters(
+            encoder_counts_ps, self._encoder_counts_pss)
+        if self.verbose:
+            print('%s: -> done.'%self.name)
+        return None
+
+    def get_acceleration_mmpss(self):
+        if self.verbose:
+            print('%s: getting acceleration'%self.name)
+        self._get_motion_parameters()
+        if self.verbose:
+            print('%s: -> acceleration_mmpss = %0.3f'%(
+                self.name, self.acceleration_mmpss))
+        return self.acceleration_mmpss
+
+    def set_acceleration_mmpss(self, acceleration_mmpss):
+        if self.verbose:
+            print('%s: setting acceleration_mmpss = %0.2f'%(
+                self.name, acceleration_mmpss))
+        assert acceleration_mmpss >= self._limits_mmpss[0], 'mmpss too low'
+        assert acceleration_mmpss <= self._limits_mmpss[1], 'mmpss too high'
+        encoder_counts_pss = self._mmpss_to_encoder_counts_pss(
+            acceleration_mmpss)
+        self._set_motion_parameters(
+            self._encoder_counts_ps, encoder_counts_pss)
+        if self.verbose:
+            print('%s: -> done.'%self.name)
+        return None
 
     def move_mm(self, move_mm, relative=True, block=True):
         legal_move_mm = self._legalize_move_mm(move_mm, relative)
